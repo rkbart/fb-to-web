@@ -64,6 +64,28 @@ node "${CLAUDE_PLUGIN_ROOT}/.claude/skills/fb-to-web/scripts/scrape.js" \
 - Post images are hotlinkable `scontent…fbcdn.net` URLs — **download them into the site's `assets/` dir** (e.g. `curl -L "<url>" -o assets/post-1.jpg`) instead of hotlinking: FB CDN URLs are signed and expire (`oe=` param). The avatar/cover URLs have the same caveat.
 - Trim post messages: remove trailing "…" artifacts and pick the 3–8 most brand-relevant posts. Use reaction counts as social-proof numbers, not as content.
 
+### Step 2.5 — Extend to Instagram for better photos (optional)
+
+Facebook pages rarely have high-quality photos; Instagram is the right place for imagery when the brand runs an Instagram. The scraper is `scripts/insta-scrape.js` and uses the same Playwright approach.
+
+```bash
+node "<skill_root>/scripts/insta-scrape.js" \
+  "https://www.instagram.com/<handle>" --posts 10 --out insta-content.json
+```
+
+- **Output shape** (same schema family as FB, but `posts` items hold one `image` + caption):
+  ```jsonc
+  {
+    "url": "https://www.instagram.com/pinehurstcoffee/",
+    "page": { "title": "Pinehurst Coffee", "description": "…", "avatar": "…", "followers": "…", "cover": "…" },
+    "posts": [
+      { "author": "…", "message": "…", "image": "https://scontent…instagram.com/img/media/…" }
+    ]
+  }
+  ```
+- **Result merging**: prefer IG photos over FB photos (they're typically higher quality). If both produce a `posts` array, pass both JSON files to the site generator and pick the best image per slot.
+- **When to prefer FB**: privacy/regulations (restaurants that must show FB booking, but link to IG photos via embedded posts), or if the IG profile is private or heavily bot-blocked.
+
 ### Step 3 — Generate the website
 
 1. Choose the site form from the content:
@@ -95,6 +117,7 @@ Proven on two live pages (T42 Cafe → Brewed Awakening): the same storefront st
 
 | Symptom | Cause | Action |
 |---|---|---|
+| Instagram blocked / bot wall | reCAPTCHA / "Checking your browser" interstitial | Add retries + longer sleeps; tell the user the IG profile is likely locked or region-blocked |\n| Instagram login wall | Private profile | Same as FB login wall — fall back to FB photos or ask for manual content |\n| Only a few photos load | Post images behind "See more" / lazy load | Increase `--posts`; scroll vertical feed once before parse |\n| Footer lacks IG link | No Instagram badge on site | Add a link to the scraped `avatar`/`description` source URL |\n| IG image expired | Signed `scontent…` URL bounced | Download the image locally on scrape (the `curl -L` pattern in Step 2 handles this); if it still expires at build time, re-run scrape.js |
 | `playwright module not found` | NODE_PATH resolution | Set `FBWEB_NODE_PATH` to the node_modules dir containing `playwright` |
 | Browser executable missing | No system Chromium | `FBWEB_CHROME=/path/to/chrome` or `npx playwright install chromium` |
 | HTTP 400 / "something went wrong" | Rare with real browser; IP block | Retry once; if persistent, tell the user scraping is blocked from this network |
@@ -108,3 +131,4 @@ Proven on two live pages (T42 Cafe → Brewed Awakening): the same storefront st
 - Facebook's DOM changes without notice — if extraction quality degrades, the selectors in `scripts/scrape.js` (`div[role="article"]`, og: meta tags) are the place to fix.
 - Signed CDN image URLs expire; always localize downloaded images.
 - Respect the page owner's copyright and Facebook's ToS — generated sites are for content the user owns or has rights to.
+- Instagram scraping is **less reliable than Facebook** (~50–70% success on public business accounts): bot detection, private accounts, and region locks are common. Always check `warnings` before building.
