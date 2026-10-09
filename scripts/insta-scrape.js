@@ -1,17 +1,14 @@
 #!/usr/bin/env node
 /**
- * insta-scrape — extract a public Instagram profile's content as JSON.
+ * insta-scrape -- extract a public Instagram profile's content as JSON.
  *
  * Usage:
  *   node insta-scrape.js <instagram_page_url> [--posts 8] [--out file.json]
  *
- * Output: JSON on stdout (and optionally --out) with shape:
- *   { url, page: {name, intro, avatar, cover, followers, website}, posts: [...] }
- *
  * Requires: playwright module + a Chromium/Chrome executable.
  * Resolves automatically; override with env INWEB_CHROME / INWEB_NODE_PATH.
  *
- * Notes: Instagram's DOM + bot-detection policies change often. Targets
+ * Notes: Instagram bot-detection policies change often. Targets
  * public business/creator profiles. Private/region-locked accounts emit
  * login-wall warnings rather than crashing.
  */
@@ -22,7 +19,7 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-/* ---------- resolve playwright (NODE_PATH or mise global install) ---------- */
+/* ---------- resolve playwright ---------- */
 function loadPlaywright() {
   try { return require('playwright'); } catch (_) { /* fall through */ }
   const envPath = process.env.INWEB_NODE_PATH;
@@ -47,7 +44,7 @@ function resolveChrome() {
   for (const p of ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable']) {
     if (fs.existsSync(p)) return p;
   }
-  return undefined; // let playwright use its own bundled browser
+  return undefined;
 }
 
 /* ------------------------------ helpers ---------------------------------- */
@@ -72,24 +69,25 @@ function parseArgs(argv) {
 function normalizePageUrl(raw) {
   let u;
   try { u = new URL(raw.trim()); } catch (_) {
-    let s = raw.trim().replace(/^\/+/, '');
-    s = s.replace(/\/+$/, '');
-    return `https://www.instagram.com/${s}`;
+    let s = raw.trim().replace(/^\//, '');
+    s = s.replace(/\/$/, '');
+    return 'https://www.instagram.com/' + s;
   }
-  if (!/^https?:$/.test(u.protocol)) throw new Error(`Unsupported protocol: ${u.protocol}`);
+  if (!/^https?:$/.test(u.protocol)) throw new Error('Unsupported protocol: ' + u.protocol);
   const { hostname, pathname } = u;
   const parts = pathname.split('/').filter(Boolean);
   const name = parts[0] || '';
   if (!/^www\.|instagram\.com$/.test(hostname) || !name) {
-    throw new Error(`Not an Instagram URL: ${raw}`);
+    throw new Error('Not an Instagram URL: ' + raw);
   }
-  return `https://www.instagram.com/${name.replace(/\/+$/, '')}/`;  // no trailing slash
+  return 'https://www.instagram.com/' + name.replace(/\/$/, '') + '/';
 }
+
 /* ------------------------ extraction (runs in page) ----------------------- */
 const IN_PAGE_PROFILE = () => {
   const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
   const meta = (name) => {
-    const el = document.querySelector(`meta[name="${name}"]`);
+    const el = document.querySelector('meta[name="' + name + '"]');
     return el ? el.getAttribute('content') : null;
   };
   const title = document.title ? document.title.replace(/^\s*- Instagram.*$/, '').trim() : '';
@@ -131,13 +129,14 @@ const IN_PAGE_POSTS = () => {
     const author = getText(card.querySelector('h2, h3, a[role="link"]:not([aria-hidden])'));
     const text = getText(card.querySelector('div[role="group"]'));
     const caption = getText(card.querySelector('figcaption, span[role="presentation"] ~ *'));
-    if (/^[0-9.,\s]+ followers|following$/i.test(text)) return;  // skip empty/loading wip
+    if (/^[0-9.,\s]+ followers|following$/i.test(text)) return;
     if (images.length === 0) return;
     if (posts.some(p => p.image === src)) return;
     posts.push({ author: author || '', message: clean(text || caption), image: src, images: [src] });
   });
   return posts;
 };
+
 /* ------------------------------- main ------------------------------------ */
 (async () => {
   const args = parseArgs(process.argv);
@@ -153,7 +152,7 @@ const IN_PAGE_POSTS = () => {
   const ctx = await browser.newContext({
     userAgent: UA,
     locale: 'en-US',
-    viewport: { width: 1366, height: 2400 },  // taller for profile + feed
+    viewport: { width: 1366, height: 2400 },
   });
   const page = await ctx.newPage();
 
@@ -161,13 +160,12 @@ const IN_PAGE_POSTS = () => {
 
   try {
     const resp = await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-    if (resp && resp.status() >= 400) result.warnings.push(`HTTP ${resp.status()} from ${pageUrl}`);
+    if (resp && resp.status() >= 400) result.warnings.push('HTTP ' + resp.status() + ' from ' + pageUrl);
 
-    // Instagram bot-detection interstitial: "Checking your browser" / reCAPTCHA
     await sleep(4000);
     for (const label of ['Not Now', 'Later', 'Retry', 'Close', 'Continue']) {
       try {
-        const btn = page.locator(`button:has-text("${label}")`).first();
+        const btn = page.locator('button:has-text("' + label + '")').first();
         if (await btn.isVisible({ timeout: 600 })) {
           await btn.click({ timeout: 1500 });
           await sleep(2000);
@@ -178,27 +176,26 @@ const IN_PAGE_POSTS = () => {
     await sleep(2000);
 
     if (/login|checkpoint|reCAPTCHA|captcha/i.test(page.url() || '')) {
-      result.warnings.push(`Login wall / bot block: ${page.url()} — profile may be private, region-blocked, or rate-limited.`);
+      result.warnings.push('Login wall / bot block: ' + page.url() + ' -- profile may be private, region-blocked, or rate-limited.');
       console.log(JSON.stringify(result, null, 2));
       if (args.out) fs.writeFileSync(args.out, JSON.stringify(result, null, 2));
       await browser.close();
       process.exit(0);
     }
 
-    // Profile
-    const prof = IN_PAGE_PROFILE();
+    const prof = await page.evaluate(IN_PAGE_PROFILE);
     if (prof) { Object.assign(result.page, prof); }
     if (!prof?.title) result.warnings.push('Profile name not found.');
     if (!prof?.avatar) result.warnings.push('Avatar not found.');
 
-    // Scroll feed to load posts
     const collected = [];
     const maxScrolls = Math.min(4 + args.posts, 15);
     for (let i = 0; i < maxScrolls; i++) {
-      // Re-create a fresh function frame each scroll to re-query the DOM fresh
-      const batch = IN_PAGE_POSTS();
+      const batch = await page.evaluate(IN_PAGE_POSTS);
       if (!batch || !batch.length) break;
-      for (const p of batch) if (!collected.find(c => c.image === p.image)) collected.push(p);
+      for (const p of batch) {
+        if (!collected.find(c => c.image === p.image)) collected.push(p);
+      }
       if (collected.length >= args.posts + 3) break;
       await page.mouse.wheel(0, 1400);
       await sleep(1800);
@@ -206,13 +203,13 @@ const IN_PAGE_POSTS = () => {
     result.posts = collected.slice(0, args.posts);
 
     if (!result.posts.length) result.warnings.push('No posts extracted (private profile or layout changed).');
-    if (collected.length < args.posts) result.warnings.push(`Only ${collected.length} of ${args.posts} requested posts loaded.`);
+    if (collected.length < args.posts) result.warnings.push('Only ' + collected.length + ' of ' + args.posts + ' requested posts loaded.');
   } catch (err) {
-    result.warnings.push(`Scraper error: ${err.message}`);
+    result.warnings.push('Scraper error: ' + err.message);
   }
 
   const json = JSON.stringify(result, null, 2);
-  if (args.out) { fs.writeFileSync(args.out, json); console.error(`Wrote ${args.out}`); }
+  if (args.out) { fs.writeFileSync(args.out, json); console.error('Wrote ' + args.out); }
   console.log(json);
   await browser.close();
 })().catch((e) => { console.error('FATAL:', e.message); process.exit(1); });

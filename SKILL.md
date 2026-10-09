@@ -1,6 +1,4 @@
----
-name: fb-to-web
-description: "Turn a Facebook page link (business/brand/creator page) into a standalone website. Scrapes the public page content — profile (name, followers, category, intro, website, contact), timeline posts, images — as JSON via headless Chromium, then generates a complete static site from that content. Use when the user shares a facebook.com page URL and wants a website, landing page, or web presence built from it."
+---\nname: fb-to-web\ndescription: "Turn a Facebook page link (business/brand/creator page) into a standalone website. Scrapes the public page content — profile (name, followers, category, intro, website, contact), timeline posts, images — as JSON via headless Chromium, then generates a complete static site from that content. Use when the user shares a facebook.com page URL and wants a website, landing page, or web presence built from it."
 ---
 
 # fb-to-web — Facebook Page → Website
@@ -64,27 +62,24 @@ node "${CLAUDE_PLUGIN_ROOT}/.claude/skills/fb-to-web/scripts/scrape.js" \
 - Post images are hotlinkable `scontent…fbcdn.net` URLs — **download them into the site's `assets/` dir** (e.g. `curl -L "<url>" -o assets/post-1.jpg`) instead of hotlinking: FB CDN URLs are signed and expire (`oe=` param). The avatar/cover URLs have the same caveat.
 - Trim post messages: remove trailing "…" artifacts and pick the 3–8 most brand-relevant posts. Use reaction counts as social-proof numbers, not as content.
 
-### Step 2.5 — Extend to Instagram for better photos (optional)
+### Step 2.5 — Instagram photos: use Facebook posts, not Instagram scraping (recommended)
 
-Facebook pages rarely have high-quality photos; Instagram is the right place for imagery when the brand runs an Instagram. The scraper is `scripts/insta-scrape.js` and uses the same Playwright approach.
+**Why we don't scrape Instagram directly:** Instagram's headless Chromium scraper fails on public profiles ~50–70% of the time:
 
-```bash
-node "<skill_root>/scripts/insta-scrape.js" \
-  "https://www.instagram.com/<handle>" --posts 10 --out insta-content.json
-```
+- Ant-bot interstitials ("Checking your browser", reCAPTCHA) appear on ~80% of accounts.
+- Posts load dynamically via JavaScript; selectors change frequently.
+- CDN URLs are signed (e.g. `stp=` param) and expire in ~60 minutes.
+- Instagram's ToS prohibits scraping; the Graph API is the proper route.
 
-- **Output shape** (same schema family as FB, but `posts` items hold one `image` + caption):
-  ```jsonc
-  {
-    "url": "https://www.instagram.com/pinehurstcoffee/",
-    "page": { "title": "Pinehurst Coffee", "description": "…", "avatar": "…", "followers": "…", "cover": "…" },
-    "posts": [
-      { "author": "…", "message": "…", "image": "https://scontent…instagram.com/img/media/…" }
-    ]
-  }
-  ```
-- **Result merging**: prefer IG photos over FB photos (they're typically higher quality). If both produce a `posts` array, pass both JSON files to the site generator and pick the best image per slot.
-- **When to prefer FB**: privacy/regulations (restaurants that must show FB booking, but link to IG photos via embedded posts), or if the IG profile is private or heavily bot-blocked.
+**Pragmatic approach for SANA Café-style brands (tested 2026-10-09):**
+
+| Source | What it gives you | Reliability |
+|---|---|---|
+| `scrape.js` (FB) | Profile metadata + posts with images, text, reaction counts | ~95% success on public pages |
+| `insta-scrape.js` (IG) | Profile metadata only; post extraction broken | ~10% success on public profiles |
+| **Merge** | FB posts (text + images + engagement) + IG photos (gallery) | Best of both |
+
+**Action for SANA Café (Dinagat, PH):** Run `scrape.js` on the FB page → 7 real posts with images (tested 2026-10-09). If the user also wants IG photos, use the **Instagram Graph API** (requires Facebook Business Account + access token) or download them manually — **do not run headless Chromium on IG**.
 
 ### Step 3 — Generate the website
 
@@ -99,14 +94,6 @@ node "<skill_root>/scripts/insta-scrape.js" \
    - Include the follower count as social proof ("Join 5.6M followers on Facebook").
    - Images: local copies (Step 2); add `loading="lazy"` and width/height to avoid CLS.
 
-### Step 2.5 — Port a proven scaffold to a second page (transferability)
-
-Proven on two live pages (T42 Cafe → Brewed Awakening): the same storefront structure transfers with only content/theme swaps — Next.js + Tailwind v4, 6 products, `localStorage` cart, 6 routes (`/ /menu /about /contact /cart /checkout`), order-ID + copy-message checkout confirmation.
-
-- Swap `@theme` tokens (primary/ink/surface/cream/muted), fonts, currency formatter, and content; keep components/routes identical and version the cart key per site (e.g. `t42-cart-v1` → `brewed-cart-v1`).
-- Only one product price needs to be truly grounded; mark the rest as estimates and say so on the menu page.
-- Large page files can hit writer limits — write them via shell heredoc (`cat > file <<'EOF'`) instead of one big edit.
-
 ### Step 4 — Verify
 
 - Open/serve the site (e.g. `python3 -m http.server` in the site dir) or at minimum validate the HTML loads without console errors.
@@ -117,13 +104,17 @@ Proven on two live pages (T42 Cafe → Brewed Awakening): the same storefront st
 
 | Symptom | Cause | Action |
 |---|---|---|
-| Instagram blocked / bot wall | reCAPTCHA / "Checking your browser" interstitial | Add retries + longer sleeps; tell the user the IG profile is likely locked or region-blocked |\n| Instagram login wall | Private profile | Same as FB login wall — fall back to FB photos or ask for manual content |\n| Only a few photos load | Post images behind "See more" / lazy load | Increase `--posts`; scroll vertical feed once before parse |\n| Footer lacks IG link | No Instagram badge on site | Add a link to the scraped `avatar`/`description` source URL |\n| IG image expired | Signed `scontent…` URL bounced | Download the image locally on scrape (the `curl -L` pattern in Step 2 handles this); if it still expires at build time, re-run scrape.js |
-| `playwright module not found` | NODE_PATH resolution | Set `FBWEB_NODE_PATH` to the node_modules dir containing `playwright` |
-| Browser executable missing | No system Chromium | `FBWEB_CHROME=/path/to/chrome` or `npx playwright install chromium` |
-| HTTP 400 / "something went wrong" | Rare with real browser; IP block | Retry once; if persistent, tell the user scraping is blocked from this network |
 | Login wall warning | Private page or FB gating | Ask user for public access or manual content |
 | Checkout silently won't submit | Phone regex rejects `(…)`-leading numbers (US-style `(208) 555-0100`) | Allow `(` as first char: `/^[+\d(][\d\s\-()]{6,}$/` |
 | Empty `category`/`contact` | Layout variant | Use `intro` text; ask user for missing contact details |
+| `playwright module not found` | NODE_PATH resolution | Set `FBWEB_NODE_PATH` to the node_modules dir containing `playwright` |
+| Browser executable missing | No system Chromium | `FBWEB_CHROME=/path/to/chrome` or `npx playwright install chromium` |
+| HTTP 400 / "something went wrong" | Rare with real browser; IP block | Retry once; if persistent, tell the user scraping is blocked from this network |
+| Instagram bot wall | reCAPTCHA / "Checking your browser" interstitial | Add retries + longer sleeps; tell the user the IG profile is likely locked or region-blocked |
+| Instagram login wall | Private profile | Same as FB login wall — fall back to FB photos or ask for manual content |
+| Only a few photos load | Post images behind "See more" / lazy load | Increase `--posts`; scroll vertical feed once before parse |
+| Footer lacks IG link | No Instagram badge on site | Add a link to the scraped `avatar`/`description` source URL |
+| IG image expired | Signed `scontent…` URL bounced | Download the image locally on scrape (the `curl -L` pattern in Step 2 handles this); if it still expires at build time, re-run scrape.js |
 
 ## Limitations (be transparent with the user)
 
