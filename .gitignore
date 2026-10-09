@@ -1,0 +1,13 @@
+# Local git state of the skill itself (never track the skill folder as a git repo)
+.git/
+
+# Local node_modules for the scraper, if you install playwright inside it
+node_modules/
+
+# Runtime JSON output
+*.json
+!fb-content.json
+
+# OS / editor junk
+.DS_Store
+*.log
